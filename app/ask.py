@@ -1,10 +1,10 @@
-"""第1回: 素のLLMに1回だけ質問するスクリプト。
+"""第1回: 素のLLMに質問するスクリプト。
 
 使い方:
     uv run python -m app.ask "LoRAとは何ですか？"
-    uv run python -m app.ask            # 質問を省略すると、講座に固有の質問をする
+    uv run python -m app.ask            # 初回質問を省略すると、講座に固有の質問をする
 
-ツールも会話履歴も持たない「素の」呼び出し。
+ツールを持たない「素の」呼び出しだが、1回の実行中は会話履歴を保つ。
 講座に固有のことを聞くと、「分からない」と答えるか、一般論でもっともらしく答える
 （講座の実際とは違う）ことを確かめよう。
 （第3回で、用語集を検索できるエージェントにして改善する）
@@ -14,6 +14,7 @@ import argparse
 
 from google import genai
 from google.genai import errors
+from google.genai import types
 
 from app.config import MODEL, api_error_message, get_api_key
 
@@ -21,14 +22,26 @@ from app.config import MODEL, api_error_message, get_api_key
 DEFAULT_QUESTION = "AIE2026の講座の宿題にある「3レベル」とは何ですか？"
 
 
-def ask(question: str) -> str:
+def ask(question: str, history: list[types.Content] | None = None) -> str:
+    """質問を送り、指定された会話履歴に質問と回答を追加する。"""
     client = genai.Client(api_key=get_api_key())
-    response = client.models.generate_content(model=MODEL, contents=question)
+    conversation = history if history is not None else []
+    user_message = types.Content(
+        role="user", parts=[types.Part.from_text(text=question)]
+    )
+    response = client.models.generate_content(
+        model=MODEL, contents=[*conversation, user_message]
+    )
 
-    # TODO(第1回 演習): response.usage_metadata から
-    #   入力トークン数と出力トークン数を表示してみよう（Copilotに頼んでよい）
+    usage = response.usage_metadata
+    print(f"[入力トークン数] {usage.prompt_token_count}")
+    print(f"[出力トークン数] {usage.candidates_token_count}")
 
-    return response.text
+    answer = response.text
+    conversation.extend(
+        [user_message, types.Content(role="model", parts=[types.Part.from_text(text=answer)])]
+    )
+    return answer
 
 
 def main() -> None:
@@ -37,9 +50,19 @@ def main() -> None:
     args = parser.parse_args()
 
     print(f"[model] {MODEL}")
-    print(f"[質問] {args.question}\n")
+    history: list[types.Content] = []
     try:
-        print(ask(args.question))
+        question = args.question
+        while True:
+            print(f"[質問] {question}\n")
+            print(ask(question, history))
+            try:
+                question = input("\n続けて質問（終了するには空行または Ctrl-D）: ").strip()
+            except EOFError:
+                print()
+                break
+            if not question:
+                break
     except errors.APIError as e:
         print(api_error_message(e.code, e.message))
         raise SystemExit(1)
